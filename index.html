@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>همبندی‌های شبکه در سه‌بعد</title>
+<style>
+:root{--bg:#F8FAFC;--card:#FFFFFF;--ink:#0F172A;--mute:#64748B;--line:#CBD5E1;--teal:#0891B2;--coral:#E8502E;--ok:#059669;--amber:#F59E0B}
+@media (prefers-color-scheme:dark){:root{--bg:#0B1220;--card:#111B2E;--ink:#E2E8F0;--mute:#94A3B8;--line:#1E3350;--ok:#34D399}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:Vazirmatn,Tahoma,"Segoe UI",system-ui,sans-serif;line-height:1.7}
+main{max-width:520px;margin:0 auto;padding:16px 14px 28px}
+h1{font-size:24px;margin:4px 0 0;font-weight:600}
+#tag{margin:2px 0 12px;color:var(--mute);font-size:15px}
+#stage{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+canvas{display:block;width:100%;height:360px;touch-action:pan-y}
+#msg{min-height:52px;padding:10px 14px;border-top:1px solid var(--line);font-size:15px}
+#msg.ok{color:var(--ok)}
+#msg.bad{color:var(--coral)}
+.row{display:flex;gap:8px;margin:12px 0}
+button{font:inherit;font-size:15px;padding:9px 14px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer}
+button:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+#fail{background:var(--coral);border-color:var(--coral);color:#fff;flex:1}
+.tabs{display:flex;flex-wrap:wrap;gap:6px}
+.tabs button[aria-pressed=true]{border-color:var(--teal);color:var(--teal);font-weight:600}
+.leg{display:flex;gap:14px;flex-wrap:wrap;color:var(--mute);font-size:13px;margin-top:16px}
+.leg i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-inline-end:5px}
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title"></h1>
+  <p id="tag"></p>
+  <div id="stage">
+    <canvas id="cv" aria-label="نمای سه‌بعدی همبندی شبکه"></canvas>
+    <div id="msg" class="" aria-live="polite"></div>
+  </div>
+  <div class="row">
+    <button id="fail">یه گره رو خراب کن</button>
+    <button id="reset">بازنشانی</button>
+  </div>
+  <div class="tabs" id="tabs"></div>
+  <div class="leg">
+    <span><i style="background:#E8502E"></i>سرور یا نقطه‌ی مهم</span>
+    <span><i style="background:#0891B2"></i>گره</span>
+    <span><i style="background:#F59E0B"></i>بسته‌ی داده</span>
+  </div>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function () {
+  var msg = document.getElementById('msg');
+  if (!window.THREE) {
+    msg.textContent = 'برای دیدن نمای سه‌بعدی به اینترنت وصل شو و صفحه رو دوباره باز کن.';
+    return;
+  }
+
+  /* ---------- داده‌ی همبندی‌ها ---------- */
+  function V(x, y, z) { return new THREE.Vector3(x, y, z); }
+  function pairs(n) { var e = []; for (var i = 0; i < n; i++) for (var j = i + 1; j < n; j++) e.push([i, j]); return e; }
+  function ringPts(n, r) { var a = []; for (var i = 0; i < n; i++) { var t = i / n * Math.PI * 2; a.push([Math.cos(t) * r, 0, Math.sin(t) * r]); } return a; }
+  function ringEdges(n) { var e = []; for (var i = 0; i < n; i++) e.push([i, (i + 1) % n]); return e; }
+  var octa = [[2.6, 0, 0], [-2.6, 0, 0], [0, 2.6, 0], [0, -2.6, 0], [0, 0, 2.6], [0, 0, -2.6]];
+
+  var T = {
+    bus: {
+      title: 'گذرگاه (Bus)',
+      tag: 'همه روی یه کابل مشترکن. کابل که قطع بشه، شبکه تکه‌تکه می‌شه.',
+      nodes: [[-2.6, 0, 1.6], [-0.9, 0, -1.6], [0.9, 0, 1.6], [2.6, 0, -1.6], [-3.2, 0, 0], [3.2, 0, 0], [-2.6, 0, 0], [-0.9, 0, 0], [0.9, 0, 0], [2.6, 0, 0]],
+      hide: [4, 5, 6, 7, 8, 9], hubs: [],
+      edges: [[4, 6], [6, 7], [7, 8], [8, 9], [9, 5], [6, 0], [7, 1], [8, 2], [9, 3]],
+      weak: [7, 8]
+    },
+    star: {
+      title: 'ستاره (Star)',
+      tag: 'همه به یه سرور وصلن. سرور که بیفته، همه قطع می‌شن.',
+      nodes: [[0, 0, 0]].concat(octa), hide: [], hubs: [0],
+      edges: [[0, 1], [0, 2], [0, 3], [0, 4], [0, 5], [0, 6]],
+      weak: [0]
+    },
+    ring: {
+      title: 'حلقه (Ring)',
+      tag: 'پیام دست‌به‌دست می‌چرخه. با یه خرابی هنوز یه راه باز می‌مونه.',
+      nodes: ringPts(8, 2.8), hide: [], hubs: [],
+      edges: ringEdges(8), weak: null
+    },
+    mesh: {
+      title: 'مش (Mesh)',
+      tag: 'همه با همه وصلن. چند گره بیفته، بسته‌ها راه دیگه‌ای پیدا می‌کنن.',
+      nodes: octa, hide: [], hubs: [],
+      edges: pairs(6), weak: null
+    },
+    tree: {
+      title: 'درختی (Tree)',
+      tag: 'سلسله‌مراتبیه. ریشه که بیفته، شاخه‌ها از هم جدا می‌شن.',
+      nodes: [[0, 2.3, 0], [-1.8, 0.4, 0], [1.8, 0.4, 0], [-2.8, -1.8, 0.9], [-0.9, -1.8, -0.9], [0.9, -1.8, 0.9], [2.8, -1.8, -0.9]],
+      hide: [], hubs: [0],
+      edges: [[0, 1], [0, 2], [1, 3], [1, 4], [2, 5], [2, 6]],
+      weak: [0]
+    },
+    hybrid: {
+      title: 'ترکیبی (Hybrid)',
+      tag: 'ترکیبی از چند همبندی، مثل شبکه‌های واقعی. سرور وسط که بیفته، دو نیمه جدا می‌شن.',
+      nodes: [[-2, 0, 0], [-3.3, 1.3, 0.5], [-3.3, -1.3, 0.5], [-3.3, 0, -1.4], [1.6, 1.3, 0], [1.6, -1, 1.1], [3, -0.2, -1]],
+      hide: [], hubs: [0],
+      edges: [[0, 1], [0, 2], [0, 3], [0, 4], [0, 5], [4, 5], [5, 6], [6, 4]],
+      weak: [0]
+    }
+  };
+  var ORDER = ['bus', 'star', 'ring', 'mesh', 'tree', 'hybrid'];
+  var LABEL = { bus: 'گذرگاه', star: 'ستاره', ring: 'حلقه', mesh: 'مش', tree: 'درختی', hybrid: 'ترکیبی' };
+  var INTRO = 'با انگشت بکش تا بچرخه. بعد دکمه‌ی خرابی رو بزن.';
+
+  /* ---------- صحنه‌ی سه‌بعدی ---------- */
+  var cv = document.getElementById('cv');
+  var ren = new THREE.WebGLRenderer({ canvas: cv, antialias: true, alpha: true });
+  ren.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  var sc = new THREE.Scene();
+  var cam = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
+  cam.position.set(0, 2.4, 10.8);
+  cam.lookAt(0, 0, 0);
+  sc.add(new THREE.AmbientLight(0xffffff, 0.75));
+  var dl = new THREE.DirectionalLight(0xffffff, 0.8);
+  dl.position.set(4, 6, 5);
+  sc.add(dl);
+  var grp = new THREE.Group();
+  sc.add(grp);
+
+  function resize() {
+    var w = cv.clientWidth || 380, h = cv.clientHeight || 360;
+    ren.setSize(w, h, false);
+    cam.aspect = w / h;
+    cam.updateProjectionMatrix();
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  var sg = new THREE.SphereGeometry(0.34, 22, 18);
+  var hg = new THREE.SphereGeometry(0.5, 22, 18);
+  var pg = new THREE.SphereGeometry(0.16, 12, 10);
+  var mH = new THREE.MeshLambertMaterial({ color: 0xE8502E });
+  var mD = new THREE.MeshLambertMaterial({ color: 0xB4B2A9 });
+  var mC = new THREE.MeshLambertMaterial({ color: 0xE24B4A });
+  var mE = new THREE.MeshLambertMaterial({ color: 0x888780 });
+  var mX = new THREE.MeshLambertMaterial({ color: 0xD3D1C7, transparent: true, opacity: 0.35 });
+  var mP = new THREE.MeshLambertMaterial({ color: 0xF59E0B, emissive: 0x8a5a10 });
+
+  /* ---------- وضعیت ---------- */
+  var cur, key, pts, N, adj, nodes, edgesArr, pk, dead, mBase;
+
+  function isHub(i) { return cur.hubs.indexOf(i) > -1; }
+  function isHidden(i) { return cur.hide.indexOf(i) > -1; }
+  function alive(i) { return i !== dead; }
+  function nb(i) { return adj[i].filter(alive); }
+  function rnd(a) { return a[Math.floor(Math.random() * a.length)]; }
+
+  function place(q) {
+    var cand = [];
+    for (var i = 0; i < N; i++) if (alive(i) && nb(i).length) cand.push(i);
+    if (!cand.length) { q.m.visible = false; q.hidden = true; return; }
+    q.hidden = false; q.m.visible = true;
+    q.f = rnd(cand); q.t = rnd(nb(q.f)); q.p = Math.random();
+  }
+
+  function components() {
+    var seen = {}, c = 0;
+    for (var i = 0; i < N; i++) {
+      if (!alive(i) || seen[i]) continue;
+      c++;
+      var st = [i]; seen[i] = 1;
+      while (st.length) {
+        var u = st.pop();
+        adj[u].forEach(function (v) { if (alive(v) && !seen[v]) { seen[v] = 1; st.push(v); } });
+      }
+    }
+    return c;
+  }
+
+  function refresh() {
+    nodes.forEach(function (m, i) {
+      if (i === dead) {
+        m.visible = true;
+        m.material = isHidden(i) ? mC : mD;
+      } else {
+        m.visible = !isHidden(i);
+        m.material = isHub(i) ? mH : mBase;
+      }
+    });
+    edgesArr.forEach(function (e) { e.m.material = (alive(e.a) && alive(e.b)) ? mE : mX; });
+    pk.forEach(function (q) { if (q.hidden || !alive(q.f) || !alive(q.t)) place(q); });
+  }
+
+  function setMsg(text, cls) { msg.textContent = text; msg.className = cls || ''; }
+
+  function build(k) {
+    key = k; cur = T[k]; dead = -1;
+    while (grp.children.length) grp.remove(grp.children[0]);
+    pts = cur.nodes.map(function (p) { return V(p[0], p[1], p[2]); });
+    N = pts.length;
+    adj = pts.map(function () { return []; });
+    edgesArr = []; nodes = [];
+    cur.edges.forEach(function (e) {
+      adj[e[0]].push(e[1]); adj[e[1]].push(e[0]);
+      var a = pts[e[0]], b = pts[e[1]], d = b.clone().sub(a), len = d.length();
+      var m = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, len, 6), mE);
+      m.position.copy(a).add(b).multiplyScalar(0.5);
+      m.quaternion.setFromUnitVectors(V(0, 1, 0), d.normalize());
+      grp.add(m);
+      edgesArr.push({ m: m, a: e[0], b: e[1] });
+    });
+    mBase = new THREE.MeshLambertMaterial({ color: k === 'mesh' ? 0x7C3AED : 0x0891B2 });
+    pts.forEach(function (p, i) {
+      var m = new THREE.Mesh(isHub(i) ? hg : sg, isHub(i) ? mH : mBase);
+      m.position.copy(p);
+      grp.add(m);
+      nodes.push(m);
+    });
+    pk = [];
+    for (var i = 0; i < 5; i++) {
+      var pm = new THREE.Mesh(pg, mP);
+      grp.add(pm);
+      var q = { m: pm, f: 0, t: 0, p: 0, hidden: false };
+      pk.push(q);
+    }
+    refresh();
+    document.getElementById('title').textContent = cur.title;
+    document.getElementById('tag').textContent = cur.tag;
+    setMsg(INTRO, '');
+    Array.prototype.forEach.call(document.querySelectorAll('#tabs button'), function (b) {
+      b.setAttribute('aria-pressed', b.dataset.k === k ? 'true' : 'false');
+    });
+  }
+
+  /* ---------- دکمه‌ها ---------- */
+  document.getElementById('fail').onclick = function () {
+    if (dead > -1) return;
+    var pool = cur.weak;
+    if (!pool) { pool = []; for (var i = 0; i < N; i++) if (!isHidden(i)) pool.push(i); }
+    dead = rnd(pool);
+    refresh();
+    if (components() > 1) {
+      setMsg('شبکه تکه‌تکه شد؛ بعضی گره‌ها دیگه به هم نمی‌رسن.', 'bad');
+    } else {
+      setMsg('یه گره افتاد، ولی شبکه هنوز کار می‌کنه. بسته‌ها مسیر دیگه‌ای پیدا کردن.', 'ok');
+    }
+  };
+  document.getElementById('reset').onclick = function () {
+    dead = -1; refresh(); setMsg(INTRO, '');
+  };
+
+  var tabs = document.getElementById('tabs');
+  ORDER.forEach(function (k) {
+    var b = document.createElement('button');
+    b.textContent = LABEL[k];
+    b.dataset.k = k;
+    b.setAttribute('aria-pressed', 'false');
+    b.onclick = function () {
+      build(k);
+      try { history.replaceState(null, '', '?t=' + k); } catch (e) {}
+    };
+    tabs.appendChild(b);
+  });
+
+  /* ---------- چرخش و انیمیشن ---------- */
+  var drag = false, lx = 0;
+  cv.addEventListener('pointerdown', function (e) { drag = true; lx = e.clientX; });
+  window.addEventListener('pointerup', function () { drag = false; });
+  window.addEventListener('pointermove', function (e) {
+    if (drag) { grp.rotation.y += (e.clientX - lx) * 0.012; lx = e.clientX; }
+  });
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var last = performance.now();
+
+  function tick(now) {
+    var dt = Math.min((now - last) / 1000, 0.05);
+    last = now;
+    if (!drag && !reduce) grp.rotation.y += dt * 0.35;
+    pk.forEach(function (q) {
+      if (q.hidden) return;
+      q.p += dt * 1.2;
+      if (q.p >= 1) {
+        var from = q.t;
+        var opts = nb(from).filter(function (x) { return x !== q.f; });
+        if (!opts.length) opts = nb(from);
+        if (!opts.length) { place(q); return; }
+        q.f = from; q.t = rnd(opts); q.p = 0;
+      }
+      q.m.position.copy(pts[q.f]).lerp(pts[q.t], q.p);
+    });
+    ren.render(sc, cam);
+    requestAnimationFrame(tick);
+  }
+
+  var want = new URLSearchParams(location.search).get('t');
+  build(T[want] ? want : 'mesh');
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
